@@ -10,6 +10,7 @@ import {
 import type { WalletContextState } from "@solana/wallet-adapter-react";
 import { sha256 } from "@noble/hashes/sha256";
 import { utf8ToBytes } from "@noble/hashes/utils";
+import { Buffer } from "buffer";
 
 export const TIP_JAR_PROGRAM_ID = new PublicKey(
   "Gu7sMSSwiYm4JhKisQxAEA8EyJhiKfE2WRQuPFiUjinK"
@@ -20,11 +21,11 @@ export const LAMPORTS_PER_SOL = 1_000_000_000;
 
 const textEncoder = new TextEncoder();
 
-function getDiscriminator(ixName: string): Uint8Array {
-  // ✅ Anchor: "global:<name>"
+function getDiscriminator(ixName: string): Buffer {
+  // Anchor: first 8 bytes of sha256("global:<name>")
   const preimage = `global:${ixName}`;
   const hash = sha256(utf8ToBytes(preimage));
-  return hash.slice(0, 8);
+  return Buffer.from(hash.slice(0, 8));
 }
 
 const DISC_INIT_VAULT = getDiscriminator("init_vault");
@@ -46,10 +47,13 @@ export function getVaultPda(owner: PublicKey): [PublicKey, number] {
 function u64ToBytes(value: bigint): Uint8Array {
   const bytes = new Uint8Array(8);
   let v = value;
+  const mask = BigInt(0xff);
+
   for (let i = 0; i < 8; i++) {
-    bytes[i] = Number(v & 0xffn);
-    v >>= 8n;
+    bytes[i] = Number(v & mask);
+    v = v >> BigInt(8);
   }
+
   return bytes;
 }
 
@@ -156,14 +160,16 @@ export async function sendTipOnChain(
   data.set(amountBytes, DISC_SEND_TIP.length);
 
   const ix = new TransactionInstruction({
-    programId: TIP_JAR_PROGRAM_ID,
-    keys: [
-      { pubkey: vaultPda, isSigner: false, isWritable: true },
-      { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
-      { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
-    ],
-    data,
-  });
+  programId: TIP_JAR_PROGRAM_ID,
+  keys: [
+    { pubkey: vaultPda, isSigner: false, isWritable: true },
+    { pubkey: wallet.publicKey, isSigner: true, isWritable: true },
+    { pubkey: SystemProgram.programId, isSigner: false, isWritable: false },
+  ],
+  // init_vault has no args → just the 8-byte discriminator
+  data: DISC_INIT_VAULT,
+});
+
 
   const signature = await sendIx(connection, wallet, ix);
   return { vaultPda, signature };
@@ -179,9 +185,7 @@ export async function withdrawOnChain(
   const [vaultPda] = getVaultPda(wallet.publicKey);
 
   const amountBytes = u64ToBytes(amountLamports);
-  const data = new Uint8Array(DISC_WITHDRAW.length + amountBytes.length);
-  data.set(DISC_WITHDRAW, 0);
-  data.set(amountBytes, DISC_WITHDRAW.length);
+  const data = Buffer.concat([DISC_WITHDRAW, Buffer.from(amountBytes)]);
 
   const ix = new TransactionInstruction({
     programId: TIP_JAR_PROGRAM_ID,
@@ -195,3 +199,4 @@ export async function withdrawOnChain(
   const signature = await sendIx(connection, wallet, ix);
   return { vaultPda, signature };
 }
+
